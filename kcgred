@@ -1,0 +1,145 @@
+#!/bin/bash
+#
+# processname: kcgred
+# pidfile: /var/run/kcgred.pid
+# cgrules.conf: /etc/cgrules.conf
+#
+# description:
+# this daemon used to move process to tasks
+# which match in regule expresion of cgrules.conf
+#
+#### END INIT INFO
+
+
+# For convenience
+PIDFILE=/var/run/kcgred.pid
+LOCKFILE=/var/lock/kcgred
+SERVICENAME=kcgred
+CGRED_CONF=/etc/cgrules.conf
+#CGROUP_PATH=/var/run/cgroups
+
+# Source function library & LSB routines
+. /etc/rc.d/init.d/functions
+log_success_msg () {
+    echo -n $*; success "$*"; echo
+}
+log_failure_msg () {
+    echo -n $*; failure "$*"; echo
+}
+log_warning_msg () {
+    echo -n $*; warning "$*"; echo
+}
+
+process_move_tasks() {
+    grep -v '^#' $CGRED_CONF|while read line
+    do
+        if [ -n "$line" ];then
+        process=$(echo $line|sed 's/:/ /g'|awk '{print $2}')
+        controller=$(echo $line|awk '{print $2}')
+        cgroup=$(echo $line|awk '{print $3}')
+        #echo -n $process $controller $cgroup
+        #echo
+        cgclassify -g $controller:$cgroup --sticky `ps -e |awk '{if($4~/'"$process"'/){print $1;}}'`
+        #cgclassify -g cpuset,memory:/foo_test/foo1 65992 66036
+        fi
+    done
+}
+
+start (){
+    echo -n $"Starting Kcgred Engine Daemon: "
+    if [ -f "$LOCKFILE" ]; then
+        log_failure_msg
+        echo "$SERVICENAME is already running with PID `cat ${PIDFILE}`"
+        return 0
+    fi
+    if [ ! -s $CGRED_CONF ]; then
+        log_failure_msg
+        echo "$CGRED_CONF not find!  please configured"
+        return 6
+    fi
+    if ! grep "^cgroup" /proc/mounts &>/dev/null; then
+        log_failure_msg
+        echo "Cannot find cgroups, is cgconfig service running?"
+        return 1
+    fi
+    touch "$LOCKFILE"
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    if [ ! -f "$PIDFILE" ]; then
+        touch "$PIDFILE"
+    fi
+    echo $$ >"${PIDFILE}"
+    log_success_msg
+
+    while ((1))
+    do
+        process_move_tasks
+        sleep 10
+    done
+    return 0
+}
+
+stop (){
+    if [ -f "${PIDFILE}" ]; then
+        /bin/kill -TERM $(cat "${PIDFILE}") 2>/dev/null
+    fi
+    if [ -f "${LOCKFILE}" ]; then
+        /bin/rm "${PIDFILE}" "${LOCKFILE}" 2>/dev/null
+    fi
+    return 0
+}
+
+usage () {
+    echo "$0 <start|stop|restart|condrestart|status>"
+    exit 2
+}
+
+status (){
+    if [ ! -f "${LOCKFILE}" ]; then
+        log_warning_msg $"Kcgred is not running."
+    else
+        thePid=$(cat "${PIDFILE}")
+        /bin/kill -s 0 "${thePid}"
+        case "$?" in
+            1 )
+                log_warning_msg $"Lockfile exists, but kcgred is dead."
+                stop
+                ;;
+            0 )
+                log_warning_msg $"Kcgred is running on PID ${thePid}."
+                RETVAL=0
+        esac
+    fi
+}
+
+case $1 in
+    start )
+        start
+        RETVAL=$?
+        ;;
+    stop )
+        stop
+        RETVAL=$?
+        ;;
+    restart )
+        stop
+        sleep 2
+        start
+        RETVAL=$?
+        ;;
+    status )
+        status
+        ;;
+    condrestart )
+        if [ -f "${LOCKFILE}" ]; then
+            restart
+            RETVAL=0
+        fi
+        ;;
+    * )
+        usage
+        ;;
+esac
+exit $RETVAL
+
